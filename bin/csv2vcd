@@ -18,7 +18,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from email.Utils import formatdate
+import datetime
 from os.path import isfile, exists, basename, splitext
 import sys
 
@@ -49,14 +49,14 @@ $version
         1.0
 $end
 $timescale
-        1ps
+        1ns
 $end
 $scope module {module} $end
 {signals}
 $upscope $end
 $enddefinitions $end
 $dumpvars
-#0
+#{inittime}
 {initial}
 $end
 '''
@@ -65,11 +65,10 @@ $end
 Time unit conversion table.
 """
 units = {
-    'ps': 1,
-    'ns': 1000,
-    'us': 1000000,
-    'ms': 1000000000,
-    's': 1000000000000
+    'ns': 1,
+    'us': 1000,
+    'ms': 1000000,
+    's': 1000000000
 }
 
 
@@ -100,6 +99,31 @@ def get_parts(line):
     # or... cparts = map(int, parts)
     return (ctime, cparts)
 
+def get_parts_header(line):
+    """
+    Parse a line of the form:
+        "{time_unit} {signal_a},{signal_b},{...},{signal_x},{float}"
+    For example:
+        -52.415000 us,0,1,0,0
+    And return a tuple of time in pico seconds and a list of signals:
+        ({time_ps}, [{signal_a}, {signal_b}, {...}, {signal_x}])
+    For example:
+        (-52415000, [0, 1, 0, 0])
+    """
+
+    parts = line.strip().split(',')
+    
+
+    time = parts[0]#.split()
+
+    unit = 's'
+    del(parts[0])
+
+    ctime = round(float(time) * units[unit])
+
+    cparts = [int(p) for p in parts]
+    # or... cparts = map(int, parts)
+    return (ctime, cparts)
 
 def convert(module, infile, outfile):
     """
@@ -109,8 +133,31 @@ def convert(module, infile, outfile):
 
     # Get signals
     fline = infile.readline()
+    # skip comment, DSView Export
+    while(fline[0] == ';'): #comment
+        fline = infile.readline()
+    #Sigrok Export
+    #get header or tail format
+    fields = fline.strip().split(',')
+    strheader = fields[0]
+    strtail   = fields[len(fields)-1]
+    headerformat = 1;
+    tailformat   = 0;
+    #get header or tail format
+    if('time' in strheader.lower()):
+        print ('Header format')
+
+    else:# ('time' in strtail.lower()):
+        print ("Tail format")
+        headerformat = 0
+        tailformat   = 1
+
     # -> List of signals names
-    psignals = [h[1:-1] for h in fline.strip().split(',')[:-1]]
+    if(headerformat):
+        psignals = [h[0:] for h in fline.strip().split(',')[1:]]
+    else:
+        psignals = [h[0:] for h in fline.strip().split(',')[:-1]]
+
     # -> Check symbol capacity
     if len(psignals) > len(symbols):
         sys.stderr.write('ERROR: Not enough symbols available.\n')
@@ -124,7 +171,7 @@ def convert(module, infile, outfile):
     # Skip garbage lines
     found = False
     for i, l in enumerate(infile, 1):
-        if l.strip().endswith('0 s'):
+        #if l.strip().endswith('0 s'):
             sys.stdout.write('Breakpoint at line #{}.\n'.format(i))
             found = True
             break
@@ -135,17 +182,21 @@ def convert(module, infile, outfile):
         return False
 
     # Initial state
-    tinit, pinit = get_parts(l)
-
+    if(headerformat):
+        tinit, pinit = get_parts_header(l)
+    else:
+        tinit, pinit = get_parts(l)
+    finittime = [str(tinit)]
     finit = [
         changed_tpl.format(pinit[i], symbols[i]) for i in range(len(pinit))
     ]
 
     # Write VCD header
     outfile.write(header_tpl.format(
-        date=formatdate(),
+        date=datetime.datetime.now(),
         module=module,
         signals='\n'.join(fsignals),
+        inittime = '\n'.join(finittime),
         initial='\n'.join(finit)
     ))
 
@@ -153,7 +204,10 @@ def convert(module, infile, outfile):
     previous = pinit
     changed = []
     for l in infile:
-        timestamp, signals = get_parts(l)
+        if(headerformat):
+            timestamp, signals = get_parts_header(l)
+        else:
+            timestamp, signals = get_parts(l)
         for p, n, s in zip(previous, signals, symbols):
             if p != n:
                 changed.append(changed_tpl.format(n, s))
